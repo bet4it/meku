@@ -673,6 +673,34 @@ impl MekuShell {
             cx.notify();
             return;
         }
+        if crate::clipboard::is_image_path(rel) {
+            if let Some(abs) = self.explorer.abs(rel) {
+                let dims = imagesize::size(&abs)
+                    .ok()
+                    .map(|s| (s.width as u32, s.height as u32));
+                self.open_lightbox(
+                    document::ImageInfo {
+                        range: 0..0,
+                        src: document::ImageSrc::Path(abs),
+                        caption: rel
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        width: None,
+                        dims,
+                    },
+                    cx,
+                );
+            }
+            return;
+        }
+        if !meku_vault::is_note(rel) {
+            if let Some(abs) = self.explorer.abs(rel) {
+                cx.reveal_path(&abs);
+            }
+            return;
+        }
         self.open_file_inner(rel, cx);
     }
 
@@ -5175,6 +5203,61 @@ mod ui_tests {
         assert!(
             buffer_text(cx, &view, &rel).1,
             "toggle marks the note dirty"
+        );
+    }
+
+    #[test]
+    fn browser_links_open_from_rendered_text() {
+        run_ui_test("browser_links", browser_links_body);
+    }
+
+    fn browser_links_body(cx: &mut TestAppContext) {
+        for (source, expected) in [
+            ("intro\n[web](https://example.com)\n", "https://example.com"),
+            (
+                "intro\nhttps://example.org/path\n",
+                "https://example.org/path",
+            ),
+            (
+                "intro\n[web][site]\n\n[site]: https://example.net\n",
+                "https://example.net",
+            ),
+        ] {
+            let (_view, window, _dir) = open_note_in(cx, 1200.0, 800.0, source);
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click_at(("doc-row", 1usize), gpui_kit::point(px(10.), px(8.)), cx);
+            })
+            .unwrap();
+            assert_eq!(cx.opened_url().as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn sidebar_image_opens_the_zoom_view() {
+        run_ui_test("sidebar_attachment", sidebar_attachment_body);
+    }
+
+    fn sidebar_attachment_body(cx: &mut TestAppContext) {
+        let (view, window, dir) = open_note_in(cx, 1200.0, 800.0, "hello");
+        std::fs::create_dir(dir.path().join("attachments")).unwrap();
+        std::fs::write(dir.path().join("attachments/photo.png"), PNG_1X1).unwrap();
+        cx.update(|cx| {
+            view.update(cx, |s, cx| {
+                s.explorer.refresh();
+                s.explorer.reveal(Path::new("attachments/photo.png"));
+                cx.notify();
+            })
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tree-row-attachments/photo.png", cx);
+        })
+        .unwrap();
+        assert!(view.read_with(&*cx, |s, _| s.lightbox.is_some()));
+        assert_eq!(
+            view.read_with(&*cx, |s, _| s.doc_rel()),
+            Some(PathBuf::from("doc.md"))
         );
     }
 

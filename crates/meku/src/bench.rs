@@ -50,9 +50,9 @@ pub(crate) fn probe(state: &GlideState, scroller: Scroller, list: &ListState) ->
                 cx.quit();
                 return;
             }
-            let due = PHASES.iter().find(|(a, b, gap)| {
-                ms >= *a && ms < *b && ms - run.borrow().last_notch >= *gap
-            });
+            let due = PHASES
+                .iter()
+                .find(|(a, b, gap)| ms >= *a && ms < *b && ms - run.borrow().last_notch >= *gap);
             if due.is_some() {
                 run.borrow_mut().last_notch = ms;
                 crate::smooth::notch(&state, &scroller, (0.0, -1.0), window, cx);

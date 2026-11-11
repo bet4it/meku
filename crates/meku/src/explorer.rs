@@ -65,6 +65,9 @@ impl Explorer {
             return hits;
         }
         for file in &self.files {
+            if !meku_vault::is_note(&file.rel) {
+                continue;
+            }
             if std::fs::metadata(&file.abs).is_ok_and(|m| m.len() > 2_000_000) {
                 continue;
             }
@@ -166,12 +169,19 @@ impl Explorer {
         let session = meku_vault::load_session(&vault.root);
         // Everything below must see the new root, not the mekuto being left:
         // folders are collected from `self.vault`, so install it first.
-        self.files = meku_vault::scan_md(&vault.root);
+        self.files = meku_vault::scan_files(&vault.root);
         self.vault = Some(vault);
         *self.attachments.borrow_mut() = None;
         self.dirs.clear();
         self.derive_dirs();
-        self.index.rebuild(&self.files);
+        self.index.rebuild(
+            &self
+                .files
+                .iter()
+                .filter(|f| meku_vault::is_note(&f.rel))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         // Expand first-level directories so a fresh mekuto shows its shape.
         self.expanded = self
             .dirs
@@ -186,9 +196,17 @@ impl Explorer {
     /// incrementally via [`Explorer::on_vault_event`]).
     pub fn refresh(&mut self) {
         if let Some(vault) = &self.vault {
-            self.files = meku_vault::scan_md(&vault.root);
+            *self.attachments.borrow_mut() = None;
+            self.files = meku_vault::scan_files(&vault.root);
             self.derive_dirs();
-            self.index.rebuild(&self.files);
+            self.index.rebuild(
+                &self
+                    .files
+                    .iter()
+                    .filter(|f| meku_vault::is_note(&f.rel))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
             self.expanded.retain(|d| self.dirs.contains(d));
         }
     }
@@ -198,9 +216,12 @@ impl Explorer {
         let Some(root) = self.root().map(Path::to_path_buf) else {
             return false;
         };
+        *self.attachments.borrow_mut() = None;
         match event {
             VaultEvent::Created(file) | VaultEvent::Modified(file) => {
-                if let Ok(text) = std::fs::read_to_string(&file.abs) {
+                if meku_vault::is_note(&file.rel)
+                    && let Ok(text) = std::fs::read_to_string(&file.abs)
+                {
                     self.index.upsert(&file.rel, &text, file.mtime);
                 }
                 match self.files.iter_mut().find(|f| f.rel == file.rel) {
@@ -246,6 +267,7 @@ impl Explorer {
             .min_depth(1)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_dir());
         for entry in walker {
@@ -365,12 +387,14 @@ impl Explorer {
         }
         for file in files {
             let id = file.rel.to_string_lossy().to_string();
-            let label = file
-                .rel
-                .file_stem()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
+            let label = if meku_vault::is_note(&file.rel) {
+                file.rel.file_stem()
+            } else {
+                file.rel.file_name()
+            }
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
             items.push(TreeItem::new(id, label));
         }
         items
@@ -477,6 +501,40 @@ mod tests {
         let mut explorer = Explorer::new();
         let _ = explorer.open(root).unwrap();
         (dir, explorer)
+    }
+
+    #[test]
+    fn attachments_show_with_extensions_but_never_enter_note_search() {
+        let (dir, mut explorer) = open_fixture();
+        let folder = dir.path().join("attachments");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("photo.png"), "searchable attachment").unwrap();
+        explorer.refresh();
+        explorer.reveal(Path::new("attachments/photo.png"));
+        assert!(
+            explorer
+                .flat_rows()
+                .iter()
+                .any(|r| r.label == "photo.png" && !r.is_dir)
+        );
+        assert!(
+            !explorer
+                .fuzzy_files("photo", 20)
+                .contains(&PathBuf::from("attachments/photo.png"))
+        );
+        assert!(explorer.search_text("searchable attachment", 20).is_empty());
+        let file = meku_vault::VaultFile {
+            rel: "attachments/new.jpg".into(),
+            abs: folder.join("new.jpg"),
+            mtime: std::time::SystemTime::now(),
+        };
+        std::fs::write(&file.abs, [0xff, 0xd8, 0xff]).unwrap();
+        explorer.on_vault_event(&meku_vault::VaultEvent::Created(file));
+        assert!(explorer.flat_rows().iter().any(|r| r.label == "new.jpg"));
+        explorer.on_vault_event(&meku_vault::VaultEvent::Removed(
+            "attachments/new.jpg".into(),
+        ));
+        assert!(!explorer.flat_rows().iter().any(|r| r.label == "new.jpg"));
     }
 
     #[test]

@@ -930,7 +930,13 @@ impl MekuShell {
                     .text_color(fg)
                     .child(lead)
                     .child(icon(
-                        if row.is_dir { Ico::Folder } else { Ico::Note },
+                        if row.is_dir {
+                            Ico::Folder
+                        } else if crate::clipboard::is_image_path(&row.rel) {
+                            Ico::Image
+                        } else {
+                            Ico::Note
+                        },
                         px(15.),
                         if selected { accent } else { muted },
                     ))
